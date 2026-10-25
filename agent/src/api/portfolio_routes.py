@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import subprocess
 import sys
 import threading
@@ -50,6 +52,14 @@ class PortfolioSettingsRequest(BaseModel):
 
 class ExtraEtfImportRequest(BaseModel):
     csv_text: str = Field(max_length=4 * 1024 * 1024)
+    label: str = Field(min_length=1, max_length=80)
+    source_mtime: str
+    expected_positions: int = Field(strict=True, ge=0, le=20000)
+    max_age_days: int = Field(strict=True, ge=1, le=365)
+
+
+class HoldingsImportRequest(BaseModel):
+    content_base64: str = Field(max_length=6 * 1024 * 1024)
     label: str = Field(min_length=1, max_length=80)
     source_mtime: str
     expected_positions: int = Field(strict=True, ge=0, le=20000)
@@ -268,6 +278,25 @@ def register_portfolio_routes(app: FastAPI) -> None:
             imported = service().settings_store.import_store.create(**payload.model_dump())
             return {"status": "ok", "import": imported}
         except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/portfolio/imports/holdings",
+        dependencies=[Depends(require_settings_write_auth)],
+    )
+    def import_holdings(payload: HoldingsImportRequest):
+        """Auto-detect a local extraETF or 同花顺 holdings file."""
+        try:
+            content = base64.b64decode(payload.content_base64, validate=True)
+            imported = service().settings_store.import_store.create_holdings(
+                content=content,
+                label=payload.label,
+                source_mtime=payload.source_mtime,
+                expected_positions=payload.expected_positions,
+                max_age_days=payload.max_age_days,
+            )
+            return {"status": "ok", "import": imported}
+        except (ValueError, binascii.Error) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/portfolio/rebalance", dependencies=[Depends(require_auth)])

@@ -461,6 +461,19 @@ USD, CNY, HKD and EUR display values use [Frankfurter reference rates](https://f
 vibe-trading portfolio rebalance --snapshot-id <snapshot-id> --targets targets.json
 ```
 
+### Import a Tonghuashun holdings snapshot
+
+The desktop Tonghuashun client can export **交易 → 查询 → 资金股票** as a GBK tab-delimited table with an `.xls` suffix. The same **Import holdings file** control accepts that export and the extraETF Investments CSV; the format is detected from the headers. The import is a dated local snapshot, not a live broker connection, and it excludes cash absent from the file.
+
+```bash
+vibe-trading portfolio import-holdings ~/Downloads/资金股票.xls \
+  --label "Kaiyuan Securities · Tonghuashun" --expected-positions 16 --max-age-days 7 --select
+vibe-trading portfolio refresh
+vibe-trading portfolio show
+```
+
+The entire import fails on an unrecognized header, count mismatch, duplicate code, invalid quantity, missing price, market-value mismatch, future file time or expired freshness policy. A-share codes are mapped to `.SH`, `.SZ` or `.BJ`; exchange-traded funds are flagged as ETFs. The delivery-note export (交割单) remains separate from holdings and can be analyzed with the trade-journal tool.
+
 ### Portfolio connector compatibility
 
 | Badge | Meaning |

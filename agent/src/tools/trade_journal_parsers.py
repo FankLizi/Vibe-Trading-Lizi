@@ -9,6 +9,8 @@ Excel (.xlsx/.xls) always opens as utf-8 internally via openpyxl/xlrd.
 
 from __future__ import annotations
 
+import csv
+import io
 import re
 import math
 from dataclasses import asdict, dataclass
@@ -32,7 +34,8 @@ FormatName = str  # "tonghuashun" | "eastmoney" | "futu" | "generic" | "unknown"
 _A_SHARE_EXCHANGE_MAP = {
     # prefix → suffix; Shanghai Main + STAR, Shenzhen Main + SME + ChiNext, BSE
     ("6",): ".SH",
-    ("0", "3"): ".SZ",
+    ("5", "9"): ".SH",
+    ("0", "1", "3"): ".SZ",
     ("4", "8"): ".BJ",
 }
 
@@ -75,6 +78,7 @@ _DIVIDEND_TOKENS = {
     "股息入账",
     "股息",
     "现金分红",
+    "股息红利税补缴",
 }
 # Non-trade corporate-action rows are dropped outright instead of parsed:
 # bonus-share / conversion credits and splits only move share counts (the
@@ -95,6 +99,14 @@ _SKIP_SIDE_TOKENS = {
     "reverse split",
     "rights issue",
     "interest",
+}
+_NON_TRADE_OPERATIONS = {
+    "申购配号",
+    "开放基金申购",
+    "交收资金冻结",
+    "交收资金冻结取消",
+    "交收资金修正",
+    "交收资金修正取消",
 }
 
 
@@ -145,18 +157,46 @@ def load_dataframe(path: str | Path) -> pd.DataFrame:
         raise FileNotFoundError(f"File not found: {p}")
 
     ext = p.suffix.lower()
-    if ext in {".xlsx", ".xls"}:
-        return pd.read_excel(p, dtype=str)
-    if ext != ".csv":
+    if ext not in {".xlsx", ".xls", ".csv"}:
         raise ValueError(f"Unsupported extension: {ext}")
+    content = p.read_bytes()
+    if ext == ".xlsx" and content.startswith(b"PK\x03\x04"):
+        return pd.read_excel(p, dtype=str)
+    if ext == ".xls" and content.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return pd.read_excel(p, dtype=str)
+    # 同花顺 and several domestic clients export a GBK tab-delimited table with
+    # an .xls suffix. Treating that as an OLE workbook fails before the parser
+    # ever sees the columns, so sniff text formats before calling read_excel.
+    return _read_delimited_bytes(content)
 
+
+def _read_delimited_bytes(content: bytes) -> pd.DataFrame:
+    """Decode and read a CSV/TSV export without guessing its encoding."""
+    if not content:
+        raise ValueError("Empty journal file")
     last_err: Exception | None = None
-    # utf-16 covers Excel "CSV UTF-16" / Unicode exports (BOM required).
-    for enc in ("utf-8-sig", "utf-8", "utf-16", "gbk", "gb2312"):
+    for enc in ("utf-8-sig", "utf-8", "utf-16", "gb18030", "gbk", "gb2312"):
         try:
-            return pd.read_csv(p, dtype=str, encoding=enc)
+            text = content.decode(enc)
         except UnicodeDecodeError as exc:
             last_err = exc
+            continue
+        if "\x00" in text:
+            continue
+        lines = [line.rstrip("\t\r ") for line in text.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("Empty journal file")
+        sample = "\n".join(lines[:20])
+        try:
+            delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+        except csv.Error:
+            delimiter = "\t" if "\t" in lines[0] else ","
+        return pd.read_csv(
+            io.StringIO("\n".join(lines)),
+            dtype=str,
+            keep_default_na=False,
+            sep=delimiter,
+        )
     raise ValueError(f"Failed to decode CSV with utf-8/utf-16/gbk/gb2312: {last_err}")
 
 
@@ -354,17 +394,24 @@ def parse_tonghuashun(df: pd.DataFrame) -> list[TradeRecord]:
         raw_code = row.get("证券代码", "")
         if _is_empty_code(raw_code):
             continue
-        if _is_skippable_side(row.get("操作")):
+        operation = row.get("操作")
+        if _is_skippable_side(operation) or str(operation).strip() in _NON_TRADE_OPERATIONS:
             continue
         qty = _to_float(row.get("成交数量"))
-        price = _to_float(row.get("成交价格"))
+        price = _to_float(row.get("成交价格")) or _to_float(row.get("成交均价"))
         amount = _to_float(row.get("成交金额")) or qty * price
-        side = _normalize_side(row.get("操作"))
+        side = _normalize_side(operation)
         if side == "dividend":
             amount = _dividend_amount(row, amount)
-        fee = _to_float(row.get("手续费")) + _to_float(row.get("印花税")) + _to_float(row.get("过户费"))
+        fee = (
+            _to_float(row.get("手续费"))
+            + _to_float(row.get("佣金"))
+            + _to_float(row.get("印花税"))
+            + _to_float(row.get("过户费"))
+            + _to_float(row.get("其他费用"))
+        )
         records.append(TradeRecord(
-            datetime=_ths_datetime(row.get("成交时间", "")),
+            datetime=_ths_datetime(row.get("成交日期", ""), row.get("成交时间", "")),
             symbol=_qualify_a_share(raw_code),
             name=str(row.get("证券名称", "")).strip(),
             side=side,
@@ -377,32 +424,39 @@ def parse_tonghuashun(df: pd.DataFrame) -> list[TradeRecord]:
     return records
 
 
-def _ths_datetime(val: Any) -> str:
-    """Normalize 成交时间; Excel serial floats become ISO datetime."""
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+def _ths_datetime(date_val: Any, time_val: Any) -> str:
+    """Combine 同花顺's separate date/time columns into one timestamp."""
+    if date_val is None and time_val is None:
         return ""
-    # iterrows yields numpy integer/float scalars; bare pd.to_datetime(int) is ns-epoch.
-    if pd.api.types.is_number(val) and not isinstance(val, (bool,)):
-        ts = pd.to_datetime(float(val), unit="D", origin="1899-12-30", errors="coerce")
-        if pd.notna(ts):
-            return ts.strftime("%Y-%m-%d %H:%M:%S")
-    # load_dataframe uses dtype=str; Excel serials arrive as "44927" / "44927.5".
-    text = str(val).strip()
-    if text and not any(ch in text for ch in "/-:"):
+    date_text = "" if date_val is None or (isinstance(date_val, float) and pd.isna(date_val)) else str(date_val).strip()
+    time_text = "" if time_val is None or (isinstance(time_val, float) and pd.isna(time_val)) else str(time_val).strip()
+    if re.fullmatch(r"\d{8}", date_text):
+        date_iso = f"{date_text[:4]}-{date_text[4:6]}-{date_text[6:]}"
+        if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", time_text):
+            return f"{date_iso} {time_text.zfill(8)}"
+        return date_iso
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_text):
+        if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", time_text):
+            return f"{date_text} {time_text.zfill(8)}"
+        return date_text
+    combined = " ".join(part for part in (date_text, time_text) if part)
+    if not combined:
+        return ""
+    # Excel serials arrive as strings from load_dataframe (dtype=str).
+    if not any(ch in date_text for ch in "/-:"):
         try:
-            serial = float(text)
+            serial = float(date_text)
         except ValueError:
             serial = None
         else:
-            # Civil day serials; YYYYMMDD ints are >= 19_000_001.
             if 1.0 <= serial < 100_000.0:
                 ts = pd.to_datetime(serial, unit="D", origin="1899-12-30", errors="coerce")
                 if pd.notna(ts):
-                    return ts.strftime("%Y-%m-%d %H:%M:%S")
-    ts = pd.to_datetime(val, errors="coerce")
+                    return f"{ts.strftime('%Y-%m-%d')} {time_text}".strip()
+    ts = pd.to_datetime(combined, errors="coerce")
     if pd.notna(ts):
         return ts.strftime("%Y-%m-%d %H:%M:%S")
-    return text
+    return combined
 
 
 def parse_eastmoney(df: pd.DataFrame) -> list[TradeRecord]:

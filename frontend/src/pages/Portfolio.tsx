@@ -566,7 +566,7 @@ function AccountCard({ account, active, displayCurrency, fx, onClick, onReconnec
         <div className="mt-4 text-2xl font-semibold">{money(accountDisplay, displayCurrency)}</div>
         <div className="mt-1 text-xs text-muted-foreground">{displayCurrency === "USD" ? money(account.total_cny, "CNY") : money(account.total_usd)} · {t("portfolio.accounts.positions", { count: account.position_count ?? 0 })}</div>
         <AccountBalanceDetails balances={account.balance_details} />
-        <div className="mt-4 flex items-center justify-between border-t pt-3 text-xs"><span className="text-positive">{account.source_kind === "extraetf" ? t("portfolio.imports.source") : t("portfolio.accounts.fresh")}</span><span className="text-muted-foreground">{dateTime(account.import_metadata?.source_mtime ?? account.last_success_at)}</span></div>
+        <div className="mt-4 flex items-center justify-between border-t pt-3 text-xs"><span className="text-positive">{account.source_kind !== "connection" ? t("portfolio.imports.source") : t("portfolio.accounts.fresh")}</span><span className="text-muted-foreground">{dateTime(account.import_metadata?.source_mtime ?? account.last_success_at)}</span></div>
       </>
     )}
     {failed && accountError ? <p className="mt-3 line-clamp-2 text-xs text-muted-foreground" title={accountError}>{accountError}</p> : null}
@@ -618,7 +618,7 @@ function DataBadge({ priced }: { priced: boolean }) {
 function CredentialCard({ account }: { account: PortfolioAccount }) {
   const { t } = useTranslation();
   const auth = account.auth;
-  if (account.source_kind === "extraetf") return <div className="rounded-lg border p-4"><div className="font-medium">{account.label}</div><p className="mt-2 text-sm">{t("portfolio.imports.hint")}</p>{account.import_metadata && <><p className="mt-2 text-xs">{t("portfolio.imports.mtime", { time: dateTime(account.import_metadata.source_mtime) })}</p><p className="text-xs">{t("portfolio.imports.expires", { time: dateTime(account.import_metadata.expires_at) })}</p></>}</div>;
+  if (account.source_kind !== "connection") return <div className="rounded-lg border p-4"><div className="font-medium">{account.label}</div><p className="mt-2 text-sm">{t("portfolio.imports.hint")}</p>{account.import_metadata && <><p className="mt-2 text-xs">{t("portfolio.imports.mtime", { time: dateTime(account.import_metadata.source_mtime) })}</p><p className="text-xs">{t("portfolio.imports.expires", { time: dateTime(account.import_metadata.expires_at) })}</p></>}</div>;
   const renewal = auth?.renewal === "automatic"
     ? t("portfolio.credentials.renewalAutomatic")
     : auth?.renewal === "session"

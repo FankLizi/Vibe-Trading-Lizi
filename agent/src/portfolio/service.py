@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 from src.portfolio.config import (
+    FILE_IMPORT_SOURCE_KINDS,
     PortfolioSettingsStore,
     PortfolioSource,
     source_catalog,
@@ -348,6 +349,8 @@ class PortfolioService:
                     )
                 except Exception:
                     auth_required = False
+                    if source.source_kind in FILE_IMPORT_SOURCE_KINDS:
+                        failure_broker = source.source_kind
                 error_code, error = _portfolio_error_details(
                     exc,
                     broker=failure_broker,
@@ -367,10 +370,10 @@ class PortfolioService:
         accounts: list[dict[str, Any]] = []
         for source in sources:
             result = results[source.id]
-            if source.source_kind == "extraetf":
+            if source.source_kind in FILE_IMPORT_SOURCE_KINDS:
                 profile = None
                 profile_id = None
-                broker = "extraetf"
+                broker = source.source_kind
             else:
                 connection, profile = self._connection_profile(source)
                 profile_id = connection.profile_id
@@ -545,7 +548,7 @@ class PortfolioService:
             "source_id": source.id,
             "profile_id": profile_id,
             "label": source.label,
-            "broker": profile.connector if profile is not None else "extraetf",
+            "broker": profile.connector if profile is not None else source.source_kind,
             "source_kind": source.source_kind,
             "status": "error",
             "error": result.get("error"),
@@ -581,7 +584,10 @@ class PortfolioService:
             return None
 
         for source in enabled_sources:
-            if source.source_kind == "extraetf" and any(row.get("source_id") == source.id and row.get("status") == "ok" for row in snapshot["accounts"]):
+            if source.source_kind in FILE_IMPORT_SOURCE_KINDS and any(
+                row.get("source_id") == source.id and row.get("status") == "ok"
+                for row in snapshot["accounts"]
+            ):
                 try:
                     self.settings_store.import_store.get(source.id, require_fresh=True)
                 except ValueError:
@@ -974,7 +980,7 @@ class PortfolioService:
             RuntimeError: If the profile is not read-only, or either connector
                 read returns a non-success status.
         """
-        if source.source_kind == "extraetf":
+        if source.source_kind in FILE_IMPORT_SOURCE_KINDS:
             return self.settings_store.import_store.collect(source)
         connection, profile = self._connection_profile(source)
         if not profile.readonly:
@@ -1196,13 +1202,14 @@ class PortfolioService:
         for account in accounts:
             metadata = account.get("import_metadata")
             if metadata:
+                source_kind = str(account.get("source_kind") or "extraetf")
                 warnings.append(
-                    f"extraETF file modified {metadata['source_mtime']}; file mtime is not a price observation. "
+                    f"{source_kind} holdings file modified {metadata['source_mtime']}; "
+                    "file mtime is not a price observation. "
                     f"Expires {metadata['expires_at']} under your freshness policy. "
-                    "Totals cover exported holdings only; cash and unexported assets are not included. "
-                    "ISIN/venue identity is unresolved, so these holdings are excluded from risk-series tools."
+                    "Totals cover exported holdings only; cash and unexported assets are not included."
                 )
-        if any(row.get("source_kind") == "extraetf" for row in accounts) and len(accounts) > 1:
+        if any(row.get("source_kind") in FILE_IMPORT_SOURCE_KINDS for row in accounts) and len(accounts) > 1:
             warnings.append("Imported views may overlap other selected sources; duplicate accounts cannot be detected. Select disjoint sources only.")
         if fx_stale:
             warnings.append(

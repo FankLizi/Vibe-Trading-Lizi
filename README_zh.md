@@ -462,6 +462,19 @@ Web UI 新增只读的 **持仓** 页面，把你选中的券商连接的持仓�
 | **不可变快照** | 每次刷新都写入 `~/.vibe-trading/portfolio/portfolio.sqlite3`；不含凭证的设置保存在 `~/.vibe-trading/portfolio.json` 与 `connections.json`。 |
 | **导出与分析** | 支持 CSV 导出，并提供脱敏的 `portfolio_summary` agent 工具，其 `risk_xray_args` 可直接传给 `portfolio_risk_xray`。终端里 `vibe-trading portfolio show` 打印同一份快照（另有 `refresh` / `sources`）。 |
 
+### 导入同花顺持仓快照
+
+电脑版同花顺可在 **交易 → 查询 → 资金股票** 导出 GBK 制表符表格，文件后缀可能是 `.xls`。持仓页的 **导入持仓文件** 同时接受这种导出和 extraETF Investments CSV，并根据表头自动识别格式。导入得到的是带文件时间的本机快照，不是实时券商连接；文件中没有的现金不会被推断。
+
+```bash
+vibe-trading portfolio import-holdings ~/Downloads/资金股票.xls \
+  --label "开源证券 · 同花顺" --expected-positions 16 --max-age-days 7 --select
+vibe-trading portfolio refresh
+vibe-trading portfolio show
+```
+
+表头无法识别、持仓数量不符、证券代码重复、数量或价格无效、市值与数量乘市价不一致、文件时间在未来或超过有效期时，整次导入都会失败。A 股代码会映射为 `.SH`、`.SZ` 或 `.BJ`，场内基金会标记为 ETF。交割单仍与持仓分开，可交给交易日志工具分析。
+
 ### 面向 AI 的连接器接入
 
 内置 SDK 连接器统一公布机器可读的 onboarding 合同：认证类型、所需凭证字段、可选依赖、安装命令以及只读验证操作。MCP 的 `trading_connections` 会返回同一份合同，持仓页的连接中心则据此自动生成通用表单。合同只包含字段名称，永远不包含凭证值。

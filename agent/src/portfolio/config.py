@@ -24,6 +24,7 @@ from src.trading.types import TradingProfile
 
 CONFIG_FILENAME = "portfolio.json"
 _SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
+FILE_IMPORT_SOURCE_KINDS = frozenset({"extraetf", "tonghuashun"})
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,7 @@ def source_catalog(
             {
                 **connection,
                 "connection_id": connection["id"],
+                "source_kind": "connection",
                 "selected": source is not None,
                 "source_id": source.id if source is not None else None,
                 "portfolio_compatibility": profile_compatibility(profile),
@@ -129,14 +131,17 @@ def source_catalog(
         )
     for imported in (import_store or PortfolioImportStore()).list():
         source = selected.get(imported["id"])
+        source_kind = str(imported.get("source_kind") or "extraetf")
         rows.append({
-            **imported, "connection_id": imported["id"], "connector": "extraetf",
+            **imported, "connection_id": imported["id"],
+            "connector": str(imported.get("broker") or source_kind),
             "profile_id": "", "environment": "import", "transport": "file_import",
             "readonly": True, "capabilities": [], "supports_reconnect": False,
             "credential_fields": [], "credential_status": {}, "credentials_configured": True,
             "notes": "Holdings export only; no account cash, no live quotes, no execution.",
             "selected": source is not None, "source_id": source.id if source else None,
             "portfolio_compatibility": None,
+            "source_kind": source_kind,
         })
     return rows
 
@@ -186,13 +191,18 @@ def parse_settings(
         if not _SOURCE_ID_RE.fullmatch(connection_id):
             raise ValueError(f"invalid portfolio connection id: {connection_id or '?'}")
         source_kind = raw.get("source_kind", "connection")
-        if source_kind not in {"connection", "extraetf"}:
+        if source_kind not in {"connection", *FILE_IMPORT_SOURCE_KINDS}:
             raise ValueError("unknown portfolio source_kind")
-        if source_kind == "extraetf":
+        if source_kind in FILE_IMPORT_SOURCE_KINDS:
             imported = (import_store or PortfolioImportStore()).get(connection_id)
+            imported_kind = str(imported.get("source_kind") or "extraetf")
+            if imported_kind != source_kind:
+                raise ValueError(
+                    f"portfolio source kind does not match the imported file: {connection_id}"
+                )
             if connection_id in seen_ids:
                 raise ValueError("portfolio source ids must be unique")
-            if raw.get("enabled", True):
+            if source_kind == "extraetf" and raw.get("enabled", True):
                 groups = {row["portfolio_id"] for row in imported["positions"]}
                 if groups & imported_portfolios:
                     raise ValueError("selected extraETF exports contain overlapping Portfolio IDs; replace the older source")
@@ -202,7 +212,7 @@ def parse_settings(
                 raise ValueError("portfolio source labels must contain 1 to 80 printable characters")
             seen_ids.add(connection_id)
             sources.append(PortfolioSource(connection_id, label, bool(raw.get("enabled", True)),
-                                           int(raw.get("order", index)), False, "extraetf"))
+                                           int(raw.get("order", index)), False, source_kind))
             continue
         legacy_profile_id = str(raw.get("profile_id") or "").strip().lower()
         if legacy_profile_id:

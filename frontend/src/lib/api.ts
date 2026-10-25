@@ -179,7 +179,7 @@ export interface PortfolioAccount {
       settling_cash: number | null;
     }[];
   }[];
-  source_kind?: "connection" | "extraetf";
+  source_kind?: "connection" | "extraetf" | "tonghuashun";
   import_metadata?: { source_mtime: string; expires_at: string; as_of_source: string } | null;
   source_id?: string;
   profile_id?: string;
@@ -272,7 +272,7 @@ export interface PortfolioReconnectState {
 }
 
 export interface PortfolioSourceSettings {
-  source_kind?: "connection" | "extraetf";
+  source_kind?: "connection" | "extraetf" | "tonghuashun";
   connection_id: string;
   label: string;
   enabled: boolean;
@@ -286,7 +286,7 @@ export interface PortfolioSettings {
 }
 
 export interface PortfolioSourceCatalogItem {
-  source_kind?: "connection" | "extraetf";
+  source_kind?: "connection" | "extraetf" | "tonghuashun";
   id: string;
   connection_id: string;
   profile_id: string;
@@ -524,6 +524,8 @@ export const api = {
     ),
   importExtraEtf: (payload: { csv_text: string; label: string; source_mtime: string; expected_positions: number; max_age_days: number }) =>
     request<{ status: string; import: { id: string } }>("/api/portfolio/imports/extraetf", { method: "POST", body: JSON.stringify(payload) }),
+  importHoldings: (payload: { content_base64: string; label: string; source_mtime: string; expected_positions: number; max_age_days: number }) =>
+    request<{ status: string; import: { id: string; source_kind: "extraetf" | "tonghuashun" } }>("/api/portfolio/imports/holdings", { method: "POST", body: JSON.stringify(payload) }),
   proposePortfolioRebalance: (snapshotId: string, targetWeights: Record<string, number>) =>
     request<{ status: string; proposal: RebalanceProposal }>("/api/portfolio/rebalance", { method: "POST", body: JSON.stringify({ snapshot_id: snapshotId, target_weights: targetWeights }) }),
   getPortfolioHistory: (limit = 180) =>

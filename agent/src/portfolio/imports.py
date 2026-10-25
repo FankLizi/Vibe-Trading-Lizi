@@ -1,4 +1,4 @@
-"""Immutable, opt-in extraETF holdings imports, separate from broker connections."""
+"""Immutable, opt-in holdings-file imports, separate from broker connections."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from typing import Any
 from src.config.paths import get_runtime_root
 from src.portfolio.extraetf import parse_export
 from src.portfolio.iso4217 import is_iso_currency
+from src.portfolio.tonghuashun import decode_export, parse_holdings
 
 MAX_IMPORT_BYTES = 4 * 1024 * 1024
 
@@ -27,6 +28,29 @@ def aware_time(value: str) -> datetime:
     if result.tzinfo is None:
         raise ValueError("source_mtime must include its timezone")
     return result.astimezone(timezone.utc)
+
+
+def _validate_envelope(
+    *,
+    label: str,
+    expected_positions: int,
+    max_age_days: int,
+    source_mtime: str,
+    now: datetime,
+) -> tuple[str, int, int, datetime, datetime]:
+    """Validate common file-import metadata before any parser runs."""
+    label = label.strip()
+    if not label or len(label) > 80 or any(ord(c) < 32 for c in label):
+        raise ValueError("import label must contain 1 to 80 printable characters")
+    if type(expected_positions) is not int or not 0 <= expected_positions <= 20000:
+        raise ValueError("expected_positions must be an integer from 0 to 20000")
+    if type(max_age_days) is not int or not 1 <= max_age_days <= 365:
+        raise ValueError("max_age_days must be an integer from 1 to 365")
+    modified = aware_time(source_mtime)
+    if modified > now:
+        raise ValueError("file modification time is in the future")
+    expires = modified + timedelta(days=max_age_days)
+    return label, expected_positions, max_age_days, modified, expires
 
 
 class PortfolioImportStore:
@@ -66,17 +90,13 @@ class PortfolioImportStore:
         now = now or datetime.now(timezone.utc)
         if not isinstance(csv_text, str) or len(csv_text.encode("utf-8")) > MAX_IMPORT_BYTES:
             raise ValueError("extraETF export exceeds the 4 MiB import limit")
-        label = label.strip()
-        if not label or len(label) > 80 or any(ord(c) < 32 for c in label):
-            raise ValueError("import label must contain 1 to 80 printable characters")
-        if type(expected_positions) is not int or not 0 <= expected_positions <= 20000:
-            raise ValueError("expected_positions must be an integer from 0 to 20000")
-        if type(max_age_days) is not int or not 1 <= max_age_days <= 365:
-            raise ValueError("max_age_days must be an integer from 1 to 365")
-        modified = aware_time(source_mtime)
-        if modified > now:
-            raise ValueError("file modification time is in the future")
-        expires = modified + timedelta(days=max_age_days)
+        label, expected_positions, max_age_days, modified, expires = _validate_envelope(
+            label=label,
+            expected_positions=expected_positions,
+            max_age_days=max_age_days,
+            source_mtime=source_mtime,
+            now=now,
+        )
         if expires <= now:
             raise ValueError("extraETF export is stale under the selected freshness policy; export again")
         parsed = parse_export(csv_text)
@@ -95,7 +115,7 @@ class PortfolioImportStore:
                        expires_at=expires.isoformat(), identity_status="unresolved_venue")
         payload = {
             "id": "extraetf-" + uuid.uuid4().hex,
-            "source_kind": "extraetf", "label": label,
+            "source_kind": "extraetf", "broker": "extraetf", "label": label,
             "source_mtime": modified.isoformat(), "as_of_source": "file_mtime",
             "imported_at": now.isoformat(), "expires_at": expires.isoformat(),
             "max_age_days": max_age_days, "expected_positions": expected_positions,
@@ -103,6 +123,115 @@ class PortfolioImportStore:
             "valuation_basis": "exported_quantity_times_price", "cash_included": False,
             "positions": positions,
         }
+        return self._persist(payload)
+
+    def create_tonghuashun(
+        self,
+        *,
+        content: bytes,
+        label: str,
+        source_mtime: str,
+        expected_positions: int,
+        max_age_days: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Validate and persist one 同花顺 ``资金股票`` holdings export.
+
+        Args:
+            content: Raw GBK/UTF-8 text bytes from the desktop export.
+            label: User-visible source name.
+            source_mtime: File modification time, not a price observation.
+            expected_positions: User-confirmed count of exported holdings.
+            max_age_days: User's freshness policy measured from file mtime.
+            now: Injected clock for deterministic validation.
+
+        Returns:
+            Public import metadata without positions.
+        """
+        now = now or datetime.now(timezone.utc)
+        if not isinstance(content, bytes) or not content:
+            raise ValueError("holdings export is empty")
+        if len(content) > MAX_IMPORT_BYTES:
+            raise ValueError("holdings export exceeds the 4 MiB import limit")
+        label, expected_positions, max_age_days, modified, expires = _validate_envelope(
+            label=label,
+            expected_positions=expected_positions,
+            max_age_days=max_age_days,
+            source_mtime=source_mtime,
+            now=now,
+        )
+        if expires <= now:
+            raise ValueError("holdings export is stale under the selected freshness policy; export again")
+        positions = parse_holdings(content)
+        if len(positions) != expected_positions:
+            raise ValueError(
+                f"expected {expected_positions} holdings, but the export contains {len(positions)}"
+            )
+        for row in positions:
+            row.update(
+                source_mtime=modified.isoformat(),
+                expires_at=expires.isoformat(),
+            )
+        payload = {
+            "id": "tonghuashun-" + uuid.uuid4().hex,
+            "source_kind": "tonghuashun",
+            "broker": "tonghuashun",
+            "label": label,
+            "source_mtime": modified.isoformat(),
+            "as_of_source": "file_mtime",
+            "imported_at": now.isoformat(),
+            "expires_at": expires.isoformat(),
+            "max_age_days": max_age_days,
+            "expected_positions": expected_positions,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "valuation_basis": "exported_quantity_times_price",
+            "cash_included": False,
+            "positions": positions,
+        }
+        return self._persist(payload)
+
+    def create_holdings(
+        self,
+        *,
+        content: bytes,
+        label: str,
+        source_mtime: str,
+        expected_positions: int,
+        max_age_days: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Auto-detect and import a supported holdings file.
+
+        Supported formats are extraETF Investments CSV and 同花顺
+        ``资金股票`` text exports. The format is selected from decoded header
+        names; an unrecognized file is refused rather than guessed.
+        """
+        text = decode_export(content)
+        first_line = next((line for line in text.splitlines() if line.strip()), "")
+        fields = set(first_line.strip().strip("\ufeff").split("\t"))
+        extraetf_fields = set(first_line.strip().strip("\ufeff").split(";"))
+        if {"ISIN", "Anzahl"}.issubset(extraetf_fields):
+            return self.create(
+                csv_text=text,
+                label=label,
+                source_mtime=source_mtime,
+                expected_positions=expected_positions,
+                max_age_days=max_age_days,
+                now=now,
+            )
+        if {"证券代码", "股票余额"}.issubset(fields):
+            return self.create_tonghuashun(
+                content=content,
+                label=label,
+                source_mtime=source_mtime,
+                expected_positions=expected_positions,
+                max_age_days=max_age_days,
+                now=now,
+            )
+        raise ValueError("unrecognized holdings export format")
+
+    def _persist(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Insert one fully validated payload and return its public metadata."""
         with self._connect() as db:
             db.execute("INSERT INTO imports VALUES (?, ?)", (payload["id"], json.dumps(payload, ensure_ascii=False)))
         return self.metadata(payload)
@@ -120,7 +249,9 @@ class PortfolioImportStore:
             raise ValueError(f"unknown portfolio import: {source_id}")
         payload = json.loads(row[0])
         if require_fresh and aware_time(payload["expires_at"]) <= datetime.now(timezone.utc):
-            raise ValueError("extraETF export is stale; import a new Investments export")
+            if payload.get("source_kind") == "extraetf":
+                raise ValueError("extraETF export is stale; import a new Investments export")
+            raise ValueError("holdings export is stale; import a new 同花顺 资金股票 export")
         return payload
 
     def list(self) -> list[dict[str, Any]]:
@@ -134,7 +265,8 @@ class PortfolioImportStore:
         """Produce a holdings-only source; never read a broker or request a quote."""
         payload = self.get(source.id, require_fresh=True)
         positions = payload.pop("positions")
+        source_kind = str(payload.get("source_kind") or "extraetf")
         for row in positions:
-            row.update(source_id=source.id, source_kind="extraetf", source_label=source.label,
+            row.update(source_id=source.id, source_kind=source_kind, source_label=source.label,
                        profile_id=None)
         return {"status": "ok", "positions": positions, "account": {}, "import_metadata": payload}
