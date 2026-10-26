@@ -1100,7 +1100,7 @@ Authentication priority is `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, s
 
 ### Claude Code CLI provider
 
-The `claude-cli` provider uses the [Claude Code](https://claude.com/claude-code) CLI you already have installed and logged in. Each agent step runs one headless `claude -p` process that only chooses the next step — call these tools, or give the final answer. Vibe-Trading runs the tools itself, so the evidence ledger, grounding checks and swarm deliverable checks behave exactly as with an API provider. It does not read `ANTHROPIC_API_KEY`.
+The `claude-cli` provider uses the [Claude Code](https://claude.com/claude-code) CLI you already have installed and logged in. Each agent step runs one headless `claude -p` process that only chooses the next step — call these tools, or give the final answer. Vibe-Trading runs the tools itself, so the evidence ledger, grounding checks and swarm deliverable checks behave exactly as with an API provider. It does not read `ANTHROPIC_API_KEY`. Native CLI tools stay disabled. If the model tries one, Vibe-Trading feeds the refusal back and asks for a host tool call instead of accepting a claim that the tools are unavailable.
 
 Log in once with Claude Code, then check that Vibe-Trading can see the login:
 
@@ -1541,6 +1541,15 @@ incompatible with `position_adjustment="hold"`.
 vibe-trading alpha bench --zoo gtja191 --universe csi300 --period 2018-2025 --top 20
 ```
 
+Bench results also carry `meta.data_availability`, a field-level contract for
+the loaded inputs. It records the market adapter, venue, currency, calendar,
+observed window, serving source, validation coverage, and an explicit status:
+`verified`, `assumed`, `unknown`, or `failed`. Date-only fundamental filings
+remain `unknown` when the source does not expose a publication timestamp, even
+when the bench applies its protective one-bar lag; consumers must not treat
+them as PIT-safe. New markets can register an adapter without changing this
+wire shape.
+
 **Browse the catalogue** and inspect a single alpha:
 ```bash
 vibe-trading alpha list --zoo gtja191 --theme reversal --limit 10
@@ -1570,6 +1579,9 @@ and FIFO matching; Excel date serials and time fractions are supported.
 A complete `datetime` column takes precedence when all three are present.
 Journal analysis rejects missing or invalid dates in any parsed record,
 including dividends, before applying filters. Correct those dates and retry.
+Buy/sell records also require finite, positive quantities before any filter is
+applied; correct missing or invalid quantities and retry. Cash dividends may
+have zero quantity.
 Rows with equal timestamps retain their source-file order for FIFO matching.
 This preserves the supplied sequence; it does not reconstruct missing fill order.
 

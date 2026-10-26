@@ -37,6 +37,7 @@ from src.factors.registry import (
     SkipAlpha,
     get_default_registry,
 )
+from src.factors.data_availability import build_availability_contract
 from src.tools.alpha_bench_tool import _MAX_HORIZON, _compute_forward_returns, _load_universe_panel, _prepare_bench_panel, _split_alphas_by_universe_support, _validate_bench_data_requirements
 
 logger = logging.getLogger(__name__)
@@ -393,6 +394,20 @@ def run_bench(
                 universe_meta = dict(universe_meta_raw)
         except Exception:  # noqa: BLE001
             universe_meta = {"raw": str(universe_meta_raw)}
+
+    required_fields = sorted(
+        {
+            str(column)
+            for aid in alpha_ids
+            for column in (reg.get(aid).meta or {}).get("columns_required", [])
+        }
+    )
+    universe_meta["data_availability"] = build_availability_contract(
+        panel,
+        universe=universe,
+        period=period,
+        required_fields=required_fields,
+    )
 
     # Multiple-testing correction. `n_alphas_tested` has always been carried
     # here and has only ever been displayed; the best IR out of hundreds of
