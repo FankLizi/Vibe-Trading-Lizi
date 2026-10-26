@@ -244,11 +244,11 @@ def _is_no_stream_chunk_error(exc: Exception) -> bool:
     return isinstance(exc, ValueError) and "no generation chunks" in str(exc).lower()
 
 
-_DSML_BAR = r"(?:\|\||｜｜)"
+_DSML_BAR = r"(?:\|+|｜+)"
 _DSML_TAG = rf"{_DSML_BAR}\s*DSML\s*{_DSML_BAR}"
 _DSML_TOOL_CALLS_RE = re.compile(
-    rf"<\s*{_DSML_TAG}\s*tool_calls\s*>(?P<body>.*?)"
-    rf"</\s*{_DSML_TAG}\s*tool_calls\s*>",
+    rf"<\s*{_DSML_TAG}\s*(?:tool_)?calls\s*>(?P<body>.*?)"
+    rf"</\s*{_DSML_TAG}\s*(?:tool_)?calls\s*>",
     re.DOTALL,
 )
 _DSML_INVOKE_RE = re.compile(
@@ -262,7 +262,12 @@ _DSML_PARAMETER_RE = re.compile(
     re.DOTALL,
 )
 _DSML_ATTR_RE = re.compile(r"""([A-Za-z_][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
-_DSML_PREFIXES = ("<||dsml||tool_calls", "<｜｜dsml｜｜tool_calls")
+_DSML_PREFIXES = (
+    "<||dsml||",
+    "<｜｜dsml｜｜",
+    "<|dsml|",
+    "<｜dsml｜",
+)
 
 
 def _parse_dsml_attrs(raw: str) -> dict[str, str]:

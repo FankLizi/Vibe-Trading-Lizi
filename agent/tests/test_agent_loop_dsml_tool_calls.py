@@ -200,4 +200,5 @@ def test_closing_dsml_tags_alone_are_tool_call_syntax() -> None:
 
     assert _looks_like_tool_call_syntax("Report.\n\n" + tail)
     assert _looks_like_tool_call_syntax("done </||DSML||invoke>")
+    assert _looks_like_tool_call_syntax("<｜DSML｜ calls>")
     assert not _looks_like_tool_call_syntax("| 标的 | 权重 |\n|---|---|\n| 000001.SZ | 38.97% |")

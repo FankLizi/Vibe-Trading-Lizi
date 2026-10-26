@@ -64,7 +64,7 @@ _FORCED_TEXT_TOOL_CALL_RE = re.compile(
     re.IGNORECASE,
 )
 _DSML_BAR_TOOL_CALL_RE = re.compile(
-    r"<\s*/?\s*[|\u2502\uFF5C]{2}\s*(?:dsml|tool_calls|invoke)\b",
+    r"<\s*/?\s*[|\u2502\uFF5C]+\s*(?:dsml|tool_calls|calls|invoke)\b",
     re.IGNORECASE,
 )
 

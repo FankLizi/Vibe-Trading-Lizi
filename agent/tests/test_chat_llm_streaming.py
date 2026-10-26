@@ -108,6 +108,24 @@ def test_parse_dsml_tool_call_content_as_structured_tool_call() -> None:
     assert response.finish_reason == "tool_calls"
 
 
+def test_parse_single_bar_dsml_calls_alias_as_structured_tool_call() -> None:
+    """OpenCode may spell DSML with one bar and the short ``calls`` tag."""
+    content = (
+        "\n\n<｜DSML｜ calls>\n"
+        '<｜DSML｜ invoke name="portfolio_summary">\n\n'
+        "</｜DSML｜ invoke>\n"
+        "</｜DSML｜ calls>"
+    )
+
+    response = ChatLLM._parse_response(_FakeChunk(content=content))
+
+    assert response.content == ""
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "portfolio_summary"
+    assert response.tool_calls[0].arguments == {}
+    assert response.finish_reason == "tool_calls"
+
+
 def test_parse_dsml_tool_call_requires_pure_tool_call_payload() -> None:
     """Do not execute DSML examples embedded inside normal assistant text."""
     content = (
@@ -144,6 +162,27 @@ def test_stream_dsml_tool_call_content_is_not_emitted_as_text() -> None:
     assert text_chunks == []
     assert response.content == ""
     assert response.tool_calls[0].name == "bash"
+
+
+def test_stream_single_bar_dsml_calls_alias_is_not_emitted_as_text() -> None:
+    """The short single-bar variant must be buffered and parsed, not displayed."""
+    content = (
+        "<｜DSML｜ calls>"
+        '<｜DSML｜ invoke name="portfolio_summary">'
+        "</｜DSML｜ invoke>"
+        "</｜DSML｜ calls>"
+    )
+    fake = _FakeStreamingLLM([_FakeChunk(content=content)])
+    text_chunks: list[str] = []
+
+    response = _client(fake).stream_chat(
+        [{"role": "user", "content": "hi"}],
+        on_text_chunk=text_chunks.append,
+    )
+
+    assert text_chunks == []
+    assert response.content == ""
+    assert response.tool_calls[0].name == "portfolio_summary"
 
 
 def test_anthropic_content_blocks_stream_with_native_tool_call() -> None:
